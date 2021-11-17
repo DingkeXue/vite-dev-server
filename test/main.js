@@ -1,0 +1,12 @@
+/*
+ * @Author: dingke
+ * @Description: 初始化项目
+ */
+
+import Vue from 'vue'
+import App from './app.vue'
+
+new Vue({
+  el: '#app',
+  render: (h) => h(App)
+})
