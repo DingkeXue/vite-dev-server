@@ -9,18 +9,10 @@ function transformModuleImports(code) {
   const ast = recast.parse(code)
   recast.types.visit(ast, {
     visitImportDeclaration(path) {
-      const source = path.node.source.value
-      /**
-       * source: Literal {
-          type: 'Literal',
-          value: 'vue',
-          raw: "'vue'",
-          loc: [Object]
-        },
-       */
+      const source = path.node.source.value // vue
       // 如果不是相对引用路径且是有效的npm包
       if (!/^\.\/?/.test(source) && isPkg(source)) {
-        path.node.source = recast.types.builders.literal(`/__modules/${source}`)
+        path.node.source = recast.types.builders.literal(`/__modules/${source}`) // 替换成 /__modules/vue
       }
       this.traverse(path)
     }

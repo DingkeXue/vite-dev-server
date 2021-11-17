@@ -1,114 +1,74 @@
-const vueCompiler = require('@vue/component-compiler')
-const fs = require('fs')
-const stat = require('util').promisify(fs.stat)
-const root = process.cwd()
-const path = require('path')
 const parseUrl = require('parseurl')
+const vueCompiler = require('@vue/component-compiler')
+const { readSource } = require('./utils/readSource')
 const { transformModuleImports } = require('./utils/transformModuleImport')
 const { loadPkg } = require('./utils/loadPkg')
-const { readSource } = require('./utils/readSource')
 
 const defaultOptions = {
   cache: true
 }
 
 const vueMiddleware = (options = defaultOptions) => {
+
   let cache
-  let time = {}
   if (options.cache) {
     const LRU = require('lru-cache')
-
-    cache = new LRU({
-      max: 500,
-      length: function (n, key) { return n * 2 + key.length }
-    })
+    cache = new LRU()
   }
 
-  // vue 编译器
-  const compiler = vueCompiler.createDefaultCompiler()
-
-  function send(res, source, mime = 'application/javascript') {
-    res.setHeader('Content-Type', mime)
-    res.end(source)
+  /** 获取缓存数据 */
+  function tryCache(key) {
+    return cache.get(key)
   }
 
-  function injectSourceMapToBlock (block, lang) {
-    const map = Base64.toBase64(JSON.stringify(block.map))
-    let mapInject
-    switch (lang) {
-      case 'js':
-        mapInject = `//# sourceMappingURL=data:application/json;base64,${map}\n`;
-        break;
-      case 'css':
-        mapInject = `/*# sourceMappingURL=data:application/json;base64,${map}*/\n`;
-      default:
-        break;
-    }
-    return { ...block, code: mapInject + block.code }
-  }
-
-  function injectSourceMapToScript (script) {
-    return injectSourceMapToBlock(script, 'js')
-  }
-
-  function injectSourceMapsToStyles (styles) {
-    return styles.map(style => injectSourceMapToBlock(style, 'css'))
-  }
-  
-  async function tryCache (key, checkUpdateTime = true) {
-    const data = cache.get(key)
-
-    if (checkUpdateTime) {
-      const cacheUpdateTime = time[key]
-      const fileUpdateTime = (await stat(path.resolve(root, key.replace(/^\//, '')))).mtime.getTime()
-      if (cacheUpdateTime < fileUpdateTime) return null
-    }
-
-    return data
-  }
-
-  function cacheData (key, data, updateTime) {
-    const old = cache.peek(key)
-
-    if (old != data) {
-      cache.set(key, data)
-      if (updateTime) time[key] = updateTime
+  /** 设置缓存 */
+  function cacheData(key, source) {
+    const old = tryCache(key)
+    if (old !== source) {
+      cache.set(key, source)
       return true
     } else return false
   }
 
-  async function bundleSFC (req) {
-    // 读取文件，获取相关信息
-    const { source, updateTime, filepath } = await readSource(req)
+  /** 封装send方法 */
+  function send(res, source, mime = "application/javascript") {
+    res.setHeader('Content-Type', mime)
+    res.end(source)
+  }
+
+  /** 将vue文件装成js文件 */
+  async function bundleSFC(req) {
+    const compiler = vueCompiler.createDefaultCompiler()
+    const { source , updateTime, filepath } = await readSource(req)
     const descriptorResult = compiler.compileToDescriptor(filepath, source)
     const assembleResult = vueCompiler.assemble(compiler, filepath, {
-      ...descriptorResult,
-      script: injectSourceMapToScript(descriptorResult.script),
-      styles: injectSourceMapsToStyles(descriptorResult.styles)
+      ...descriptorResult
     })
     return { ...assembleResult, updateTime }
   }
 
   return async (req, res, next) => {
     const { path } = req
-    if(path.endsWith('.js')) { // 处理 js 文件
-      const result = await readSource(req)
-
-      const out = transformModuleImports(result.source)
-
+    if (path.endsWith('.js')) { // 处理 js 文件。替换引入方式
+      const key = parseUrl(req).pathname
+      let out = tryCache(key)
+      if (!out) {
+        const result = await readSource(req)
+        out = transformModuleImports(result.source)
+        cacheData(key, out)
+      }
       send(res, out)
-    } else if (path.endsWith('.vue')) { // 处理 .vue 文件
-      // 将 vue 文件转成 单文件组件
+    } else if (path.endsWith('.vue')) { // 处理vue文件，将文件转成js
       const out = await bundleSFC(req)
       send(res, out.code)
-
-    } else if (path.startsWith('/__modules/')) {
-      const pkg = path.replace(/^\/__modules\//g, '')
-      const out = (await loadPkg(pkg)).toString()
+    } else if (path.startsWith('/__modules/')) { // 处理 vue 包
+      const pkg = path.replace(/^\/__modules\//g, '') // /__modules/vue ==> vue
+      const out = await loadPkg(pkg)
       send(res, out)
-    } else {
+    } else { 
       next()
     }
+    
   }
 }
 
